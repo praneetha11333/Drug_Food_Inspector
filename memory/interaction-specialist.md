@@ -1,48 +1,48 @@
-# Interaction Specialist — Agentic Workflow
+# Interaction Specialist — Agent
 
-## Trigger
-User reports taking a medication alongside food and describes symptoms.
+## Role
+A single agent responsible for one job: take the user's drug, food, and symptoms — look it up using real APIs — and return a severity with a summary.
 
 ---
 
-## Workflow Steps
-
-### 1. Collect Input
-- Drug name(s) taken
+## Input (from LangGraph State)
+- Drug name
 - Food consumed
 - Symptoms reported
-- Timing (when taken, when symptoms started)
+- Timing
 
-### 2. Normalize Drug Name
-- Call **RxNav API** to resolve and normalize the drug name to a standard RxCUI identifier
-- Handle brand names, generics, and misspellings
-
-### 3. Fetch Interaction Data
-- Call **OpenFDA API** using the normalized drug identifier
-- Retrieve known drug–food interactions and adverse event reports
-
-### 4. Analyze & Summarize
-- Cross-reference reported symptoms against fetched interaction data
-- Determine severity: `mild` | `moderate` | `severe`
-- Summarize the likely interaction in plain language
-
-### 5. Take Action (based on severity)
-
-| Severity | Action |
-|----------|--------|
-| Mild | Provide home remedy recommendations |
-| Moderate | Provide recommendations + advise monitoring |
-| Severe | Immediately recommend scheduling a doctor's appointment |
+## Output (to LangGraph State)
+- `rxcui` — normalized drug identifier
+- `interaction_summary` — plain language summary of the interaction
+- `severity` — `mild` | `moderate` | `severe`
 
 ---
 
-## APIs Used
-- **RxNav API** — Drug name normalization → `https://rxnav.nlm.nih.gov/REST/rxcui.json?name={drug}`
-- **OpenFDA API** — Interaction & adverse event data → `https://api.fda.gov/drug/event.json`
+## What It Does
+
+### Step 1 — Normalize Drug Name
+- Calls **RxNav API** with the drug name
+- Returns a standard `RxCUI` identifier
+- If no match → ask user to clarify drug name, do not proceed
+
+### Step 2 — Fetch Interaction Data
+- Calls **OpenFDA API** using the `RxCUI`
+- Retrieves real adverse event reports from the FDA database
+
+### Step 3 — Analyze & Output
+- Cross-references user symptoms against fetched adverse event data
+- Determines severity based on fetched data, not LLM knowledge
+- Writes `rxcui`, `interaction_summary`, and `severity` to LangGraph State
 
 ---
 
-## Notes
-- Always normalize before querying OpenFDA to ensure accurate results
-- If RxNav returns no match, prompt user to clarify the drug name before proceeding
-- Severe cases must bypass recommendations and go directly to appointment scheduling
+## Tools (Real API Calls — Not LLM Knowledge)
+- `rxnav_normalize(drug_name)` → `https://rxnav.nlm.nih.gov/REST/rxcui.json?name={drug}`
+- `openfda_fetch(rxcui)` → `https://api.fda.gov/drug/event.json?search=patient.drug.openfda.rxcui:{rxcui}`
+
+---
+
+## Rules
+- Always normalize before querying OpenFDA
+- Never determine severity from LLM knowledge — only from fetched data
+- Does not recommend or schedule — only analyzes and outputs severity
