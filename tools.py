@@ -6,8 +6,8 @@ import os
 load_dotenv()
 CAL_API_KEY=os.getenv("CAL_API_KEY")
 
-@tool
-def drug_food_interaction_tool(drug_name: str) -> dict:
+#@tool
+def drug_drug_interaction_tool(drug_name: str) -> dict:
     """
     Agent tool that normalizes a drug name via RxNav and then retrieves 
     its official FDA food interaction warnings using the openFDA API.
@@ -30,8 +30,11 @@ def drug_food_interaction_tool(drug_name: str) -> dict:
             candidates = rx_res.json().get("approximateGroup", {}).get("candidate", [])
             if candidates:
                 # Use the standardized name for better openFDA matching
+                print("running reached")
                 canonical_name = candidates[0].get("name", clean_drug)
+                print(canonical_name)
     except requests.exceptions.RequestException:
+        print("failed to fetch")
         pass # If RxNav fails, fallback to the user's raw string for openFDA
 
     # STEP 2: Query openFDA for the drug's food interaction warnings
@@ -58,16 +61,19 @@ def drug_food_interaction_tool(drug_name: str) -> dict:
             return {"success": False, "message": "No label data returned."}
             
         label = results[0]
-        
+        print(label.keys())
         # openFDA maps food interactions to 'drug_and_food_interactions' or fields within 'description'/'warnings'
-        food_interactions = label.get("drug_and_food_interactions", None)
+        #food_interactions = label.get("warnings_and_cautions", None)
+        food_interactions = label.get("drug_interactions_table", [""])
         
         # Fallback check if the specific food field is missing but general warnings exist
         if not food_interactions:
-            precautions = label.get("precautions", [""])
-            warnings = label.get("warnings", [""])
+            precautions = label.get("warnings_and_cautions", [""])
+            
+            
             # Combine them for the LLM to scan
-            food_interactions = [f"Check general warnings: {warnings[0]} {precautions[0]}"]
+            food_interactions = [f"Check general warnings:  {precautions[0]}"]
+            
 
         return {
             "success": True,
@@ -78,9 +84,14 @@ def drug_food_interaction_tool(drug_name: str) -> dict:
     except requests.exceptions.RequestException as e:
         return {"error": f"Failed to retrieve data from FDA servers: {str(e)}"}
     
+answer=drug_drug_interaction_tool("paracetmol")
+print(answer)   
+
+
+    
 BASE_URL = "https://cal.com"    
 
-@tool
+#@tool
 def check_doctor_availability(event_type_id: int, start_date: str, end_date: str) -> dict:
     """
     Scans Cal.com for a doctor's open appointment slots within a date range.
