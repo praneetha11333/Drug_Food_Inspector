@@ -1,114 +1,112 @@
 from pathlib import Path
 import json
+import os
+from dotenv import load_dotenv
+from pydantic import BaseModel, Field
+from langchain_openai import ChatOpenAI
+from langchain.agents.structured_output import ToolStrategy
+from langchain.agents import create_agent
+from tools import drug_drug_interaction_tool, check_doctor_availability, reserve_Slot
 
 logs = Path("logs.json")
 logs_content = json.dumps(json.loads(logs.read_text()), indent=2) if logs.exists() and logs.stat().st_size > 2 else "No past interactions yet."
 
+ROOT = Path(__file__).parent
+LOG_FILE = ROOT / "logs.json"
+
 SYSTEM_PROMPT = f"""
-You are a Drug-Food Interaction Inspector AI.
+You are a dedicated Drug-Drug Interaction Inspector AI. Your sole responsibility is to evaluate potential interactions between two medications to ensure patient safety.
 
-Always collect: drug name, food consumed, symptoms, and timing before proceeding.
+OPERATIONAL EXECUTION FLOW PROTOCOL:
+1. INTAKE ANALYSIS: Extract the names of both drugs and the patient's current symptoms from the user input. If exact formulations or timings are missing, DO NOT pause to ask questions. Assume standard adult variations and immediately proceed to evaluation.
+2. CACHE LOOKUP: Before executing any tool calls, inspect the "PAST INTERACTION LOGS" section below. If the exact combination of the two drugs is present, immediately use that cached interaction data and skip calling the `drug_drug_interaction_tool`.
+3. LIVE TOOL CALL: If no matching cache entry exists, you MUST call `drug_drug_interaction_tool`. Pass the two drug names as separate arguments. You are strictly forbidden from determining interaction severity using your own internal knowledge; you must rely exclusively on the tool output.
 
-Use `drug_food_interaction_tool` to normalize the drug and fetch real FDA interaction data.
-From the ouput that's generated check for the user food and drug warnings.
-Never determine severity from your own knowledge — only from fetched data.
+SEVERITY ROUTING ENGINE MATRIX (STRICT ENFORCEMENT):
+- mild:
+  * Actions: Suggest 2-3 safe home remedies or general comfort measures. 
+  * Restrictions: DO NOT call any scheduling or calendar tools (`check_doctor_availability`, `reserve_Slot`).
+  * Required Conclusion: Conclude your final response exactly with: "If symptoms worsen, see a doctor."
+  
+- moderate:
+  * Actions: Instruct the user to see a healthcare professional soon.
+  * Required Tool Sequence: You MUST execute these sequentially. First, call `check_doctor_availability` to fetch valid time strings. Wait for the tool output, select the first available slot from the response list, and then call `reserve_Slot` using that exact start time. Do not make up a time.
+  
+- severe:
+  * Actions: Adopt an urgent, authoritative tone. Command the user to go to the nearest Emergency Room (ER) immediately.
+  * Required Tool Sequence: You MUST execute these sequentially. First, call `check_doctor_availability` to fetch valid time strings for follow-up evaluation. Wait for the tool output, select the first available slot from the response list, and then call `reserve_Slot` using that exact start time. Do not make up a time.
 
-Severity routing:
-- mild → give 2-3 home remedy suggestions, end with "if symptoms worsen, see a doctor." Do not schedule.
-- moderate → tell user to see a doctor soon, automatically call `check_doctor_availability` to find open slots, then call `book_doctor_appointment` to confirm. Include interaction summary in the booking briefing.
-- severe → urgent tone, tell user to go to ER immediately, automatically call `check_doctor_availability` and `book_doctor_appointment` for the earliest available slot. Include interaction summary for ER/doctor staff.
-
-For moderate and severe, always attempt scheduling without waiting for the user to ask.
-Never recommend prescription medications. Never skip drug normalization.
-
-Past interaction logs (use these directly if the same drug+food combination is found, skip tool calls):
-{logs_content}
+PAST INTERACTION LOGS:
+{{logs_content}}
 """
 
-from pydantic import BaseModel,Field
-
 class Interaction_result(BaseModel):
-    drug: str = Field(description="The drug name")
-    food: str = Field(description="The food item")
+    drug_1: str = Field(description="The drug name")
+    drug_2: str = Field(description="The other drug name")
     severity: str = Field(description="The severity of the interaction")
     remedy: str = Field(description="The remedy for the interaction")
     doctor_scheduled: bool = Field(description="Whether the doctor was scheduled or not")
 
-from pathlib import Path
-   
-ROOT = Path(__file__).parent
-LOG_FILE = ROOT / "logs.json"
 
-def write_logs(drug: str,food: str,severity: str,remedy: str = None,doctor_scheduled: bool = False):
+def write_logs(drug_1: str, drug_2: str, severity: str, remedy: str = None, doctor_scheduled: bool = False, invoked_tools: list = None):
     log_entry = {
-        "drug": drug,
-        "food": food,
+        "drug_1": drug_1,
+        "drug_2": drug_2,
         "severity": severity,
         "remedy": remedy,
-        "doctor_scheduled": doctor_scheduled
+        "doctor_scheduled": doctor_scheduled,
+        "invoked_tools": invoked_tools or []
     }
-    with open(LOG_FILE, "r+") as f:
+    logs_data = []
+    if LOG_FILE.exists():
         try:
-            logs = json.load(f)
-        except json.JSONDecodeError:
-            logs = []
-        logs.append(log_entry)
-        f.seek(0)
-        json.dump(logs, f, indent=2)
-        
-
-from langchain_openai import ChatOpenAI
-from langchain.agents import create_agent
-from langchain.agents.structured_output import ToolStrategy
-from dotenv import load_dotenv
-import os
-
-from tools import drug_food_interaction_tool, check_doctor_availability, book_doctor_appointment
-
-
+            with open(LOG_FILE, "r") as f:
+                logs_data = json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            logs_data = []
+            
+    logs_data.append(log_entry)
+    with open(LOG_FILE, "w") as f:
+        json.dump(logs_data, f, indent=2)
+            
 load_dotenv()
-Model = os.getenv("Model", "gpt-4o")
-        
-def main()-> Interaction_result:
+
+def main():
+    Model = os.getenv("Model", "gpt-4o")
+    
     model = ChatOpenAI(
         model=Model,
-        use_responses_api=True,
         timeout=90,
         max_retries=2,
         api_key=os.getenv("OPENAI_API_KEY"),
-        base_url="https://aipipe.org/openai/v1"
+        base_url="https://aipipe.org/openai/v1",
+        model_kwargs={"reasoning_effort": "none"}
     )
+    
+    # FIXED: Removed ToolStrategy so the agent can invoke multiple different tools in sequence
     agent = create_agent(
         model=model,
-        tools=[drug_food_interaction_tool, check_doctor_availability, book_doctor_appointment],
-        system_prompt=SYSTEM_PROMPT,
-        response_format=ToolStrategy(Interaction_result)
+        tools=[drug_drug_interaction_tool, check_doctor_availability, reserve_Slot],
+        system_prompt=SYSTEM_PROMPT
     )
+    
     try:
         result = agent.invoke({
-            "input": "I took aspirin and ate grapefruit."
+            "messages": [
+                {"role": "user", "content": "I took Tylenol and DayQuil together 2 hours ago. I am now experiencing severe upper-right abdominal pain, nausea, and yellowing of my eyes."}
+                
+            ]
         })
         print(result)
-        write_logs(
-            drug=result.drug,
-            food=result.food,
-            severity=result.severity,
-            remedy=result.remedy,
-            doctor_scheduled=result.doctor_scheduled
-        )
+        return result
     except Exception as e:
-        write_logs(
-            drug="unknown",
-            food="unknown",
-            severity="error",
-            remedy=f"Error occurred: {str(e)}",
-            doctor_scheduled=False
-        )
-
-
+        print(f"Error during agent invocation: {e}")
+        return {"error": str(e)}
+        
+     
+        
+       
+        
+    
 if __name__ == "__main__":
     main()
-
-
-
-

@@ -1,9 +1,1 @@
-[
-  {
-    "drug": "unknown",
-    "food": "unknown",
-    "severity": "error",
-    "remedy": "Error occurred: 'dict' object has no attribute 'drug'",
-    "doctor_scheduled": false
-  }
-]
+[]

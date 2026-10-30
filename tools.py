@@ -3,10 +3,11 @@ import requests
 from datetime import datetime
 from dotenv import load_dotenv
 import os
+from datetime import timedelta
 load_dotenv()
 CAL_API_KEY=os.getenv("CAL_API_KEY")
 
-#@tool
+@tool
 def drug_drug_interaction_tool(drug_name: str) -> dict:
     """
     Agent tool that normalizes a drug name via RxNav and then retrieves 
@@ -84,83 +85,84 @@ def drug_drug_interaction_tool(drug_name: str) -> dict:
     except requests.exceptions.RequestException as e:
         return {"error": f"Failed to retrieve data from FDA servers: {str(e)}"}
     
-answer=drug_drug_interaction_tool("paracetmol")
-print(answer)   
+#answer=drug_drug_interaction_tool("paracetmol")
+#
+# print(answer)   
 
 
     
-BASE_URL = "https://cal.com"    
+BASE_URL = "https://api.cal.com/v2/slots"   
 
-#@tool
-def check_doctor_availability(event_type_id: int, start_date: str, end_date: str) -> dict:
-    """
-    Scans Cal.com for a doctor's open appointment slots within a date range.
+EVENT_TYPE_ID = 7703493
+
+@tool
+def check_doctor_availability(event_type_id: str) -> dict:
+    """Checks all the open, available time slots for the doctor.
     
     Args:
-        event_type_id (int): The ID of the doctor's event type (e.g. 123456).
-        start_date (str): The starting date to check in YYYY-MM-DD format.
-        end_date (str): The ending date to check in YYYY-MM-DD format.
+        event_type_id (str): The ID of the doctor's event type (e.g. '7703493').
     """
-    url = f"{BASE_URL}/slots"
-    headers = {"Authorization": f"Bearer {CAL_API_KEY}"}
-    params = {
+    headers = {
+        "Authorization": f"Bearer {CAL_API_KEY}", 
+        "cal-api-version": "2024-09-04"
+    }
+    
+    # Check slots starting from right now up to the next 3 days
+    start_time = datetime.utcnow().isoformat() + "Z"
+    end_time = (datetime.utcnow() + timedelta(days=3)).isoformat() + "Z"
+    
+    query_params = {
         "eventTypeId": event_type_id,
-        "startTime": f"{start_date}T00:00:00Z",
-        "endTime": f"{end_date}T23:59:59Z"
+        "start": start_time,
+        "end": end_time,
+        "timeZone":"Asia/Kolkata"
     }
     
     try:
-        response = requests.get(url, headers=headers, params=params, timeout=10)
+        response = requests.get(url=BASE_URL, headers=headers, params=query_params, timeout=10)
         response.raise_for_status()
-        data = response.json()
-        
-        slots_data = data.get("slots", {})
-        if not slots_data:
-            return {
-                "success": True, 
-                "message": f"No available slots found between {start_date} and {end_date}."
-            }
+        result = response.json()
+        slots = result["data"]
+       
+        if not slots:
+            return {"success": True, "message": "No slots found in this window."}
             
-        return {
-            "success": True,
-            "available_slots": slots_data
-        }
+        return {"success": True, "Available_slots": slots}
     except requests.exceptions.RequestException as e:
-        return {"success": False, "error": f"API request failed: {str(e)}"}
+        error_msg = response.text if 'response' in locals() else str(e)
+        return {"success": False, "error": f"API Error: {error_msg}"}
+    
+# Run the test
+#print(check_doctor_availability(EVENT_TYPE_ID))
+
+
 
 @tool
-def book_doctor_appointment(event_type_id: int, start_time: str, patient_name: str) -> dict:
+def reserve_Slot(event_type_id: int, start_time: str) -> dict:
     """
     Books an open slot for a patient in Cal.com.
     
     Args:
         event_type_id (int): The ID of the doctor's event type.
-        start_time (str): The exact ISO timestamp chosen by the user (e.g., '2026-10-28T14:30:00Z').
-        patient_name (str): Full name of the patient.
-        
+        start_time (str): ISO 8601 datestring in UTC timezone representing available slot. ex: 2026-11-02T09:20:00.000+05:30  
     """
-    url = f"{BASE_URL}/bookings"
-    headers = {"Authorization": f"Bearer {CAL_API_KEY}"}
+    url = "https://api.cal.com/v2/slots/reservations"
+    headers = {"Authorization": f"Bearer {CAL_API_KEY}","cal-api-version": "2024-09-04"}
     payload = {
         "eventTypeId": event_type_id,
-        "start": start_time,
-        "name": patient_name,
-        "timeZone": "UTC",
-        "language": "en"
+        "slotStart": start_time
     }
-    
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=10)
         response.raise_for_status()
-        booking_data = response.json().get("booking", {})
-        
+        result=response.json()
         return {
             "success": True,
-            "booking_id": booking_data.get("id"),
-            "status": booking_data.get("status"),
-            "summary": booking_data.get("title"),
-            "confirmed_time": booking_data.get("start")
+            "Start_timing":result["data"]["slotStart"],
+            "Slot_Duration":result['data']["slotDuration"]
         }
     except requests.exceptions.RequestException as e:
         return {"success": False, "error": f"Booking failed: {str(e)}"}
+
+#print(reserve_Slot(7703493,"2026-11-02T09:40:00.000+05:30"))
     
